@@ -8,6 +8,7 @@ PyramidalRecurrentBlock <-
     
     public = list(
       units = NULL,
+      batch = NULL,
       num_layers = NULL,
       cell_type = NULL,
       activation = NULL,
@@ -24,6 +25,7 @@ PyramidalRecurrentBlock <-
       
       initialize = function(
         units,
+        batch,
         num_layers,
         cell_type,
         activation,
@@ -38,6 +40,7 @@ PyramidalRecurrentBlock <-
         
       ) {
         self$units <-  units
+        self$batch <- batch
         self$num_layers <- num_layers
         self$cell_type <- cell_type
         self$activation <- activation
@@ -51,24 +54,6 @@ PyramidalRecurrentBlock <-
         self$recurrent_dropout <- recurrent_dropout
       },
       
-      pad_sequence = function(output) {
-        shape           <- output$shape
-        batch_size      <- shape[0]
-        sequence_length <- shape[1]
-        num_units       <- shape[-1]
-        
-        padding <- list(c(0L, 0L),
-                        c(0L, tf$math$floormod(sequence_length, 2L)),
-                        c(0L, 0L))
-        
-        output <- tf$pad(output, padding)
-        
-        concat_output <- tf$reshape(output,
-                                    c(batch_size, -1L,
-                                      tf$math$multiply(num_units, 2L)))
-        concat_output
-      },
-      
       build = function(input_shape) {
         
         stopifnot(self$cell_type %in% c("LSTM", "GRU", "RNN"))
@@ -80,7 +65,7 @@ PyramidalRecurrentBlock <-
           "RNN"  = layer_simple_rnn
         )
         
-        self$layers <- map(
+        self$layers <- purrr::map(
           .x = vector(mode = "list", length = self$num_layers),
           .f = function(x) bidirectional(layer = self$cell(
             units = self$units,
@@ -93,6 +78,7 @@ PyramidalRecurrentBlock <-
       
       
       call = function(x, mask = NULL) {
+
         output <- x
         
         i <- 0L
@@ -116,11 +102,38 @@ PyramidalRecurrentBlock <-
         c(output, state)
       },
       
+      pad_sequence = function(output) {
+        shape           <- output$shape
+        sequence_length <- shape[1]
+        num_units       <- shape[-1]
+        
+        floormod <- tf$math$floormod(sequence_length, 2L)
+        
+        padding <- list(c(0L, 0L),
+                        c(0L, floormod),
+                        c(0L, 0L))
+        
+        output <- tf$pad(output, padding)
+        
+        new_units <- tf$math$multiply(num_units, 2L)
+        
+        new_sequence_length <-
+          tf$math$floordiv(sequence_length, 2L) + floormod
+        
+        new_shape <- 
+          tf$stack(list(self$batch, new_sequence_length, new_units))
+        
+        concat_output <- tf$reshape(output, new_shape)
+
+        concat_output
+      },
+      
+      
       compute_output_shape = function(input_shape) {
         output_shape <-
-          list(input_shape[[1]],
+          list(input_shape[[1L]],
                as.integer(input_shape[[2]] %/% 2L ^ (self$num_layers - 1L)),
-               input_shape[[3]])
+               input_shape[[3L]])
         
         output_shape
       }
@@ -132,6 +145,7 @@ PyramidalRecurrentBlock <-
 layer_pyramidal_recurrent_block <-
   function(object,
            units,
+           batch_size = 16,
            num_layers = 3,
            cell_type = 'LSTM',
            activation = 'tanh',
@@ -150,6 +164,7 @@ layer_pyramidal_recurrent_block <-
       object,
       list(
         units = as.integer(units),
+        batch = as.integer(batch_size),
         num_layers = as.integer(num_layers),
         cell_type = toupper(as.character(cell_type)),
         activation = tf$keras$activations$get(activation),
