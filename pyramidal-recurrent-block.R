@@ -8,10 +8,11 @@ PyramidalRecurrentBlock <-
     
     public = list(
       units = NULL,
-      batch = NULL,
       num_layers = NULL,
       cell_type = NULL,
       activation = NULL,
+      projection_activation = NULL,
+      projection_batchnorm = NULL,
       kernel_initializer = NULL,
       kernel_regularizer = NULL,
       recurrent_activation = NULL,
@@ -25,10 +26,11 @@ PyramidalRecurrentBlock <-
       
       initialize = function(
         units,
-        batch,
         num_layers,
         cell_type,
         activation,
+        projection_activation,
+        projection_batchnorm,
         kernel_initializer,
         kernel_regularizer,
         recurrent_activation,
@@ -36,14 +38,14 @@ PyramidalRecurrentBlock <-
         recurrent_regularizer,
         bias_initializer,
         bias_regularizer,
-        recurrent_dropout
+        recurrent_dropout) {
         
-      ) {
         self$units <-  units
-        self$batch <- batch
         self$num_layers <- num_layers
         self$cell_type <- cell_type
         self$activation <- activation
+        self$projection_activation <-  projection_activation
+        self$projection_batchnorm <-  projection_batchnorm
         self$kernel_initializer <- kernel_initializer
         self$kernel_regularizer <- kernel_regularizer
         self$recurrent_activation <- recurrent_activation
@@ -78,7 +80,7 @@ PyramidalRecurrentBlock <-
       
       
       call = function(x, mask = NULL) {
-
+  
         output <- x
         
         i <- 0L
@@ -93,8 +95,17 @@ PyramidalRecurrentBlock <-
           state  <- tf$concat(
             list(context_forward, context_backward), -1L)
           
+          
           if (i > 0L)
-            output <- self$pad_sequence(output)
+            output <- output %>% 
+              self$pad_sequence() %>%
+              layer_dense(self$units)
+          
+          if (self$projection_batchnorm)
+            output %<>% layer_batch_normalization()
+          
+          if (self$projection_activation) 
+            output %<>% layer_activation_relu()
           
           i <- i + 1L
         }
@@ -103,25 +114,25 @@ PyramidalRecurrentBlock <-
       },
       
       pad_sequence = function(output) {
-        shape           <- output$shape
-        sequence_length <- shape[1]
-        num_units       <- shape[-1]
+        
+        batch           <- tf$shape(output)[1]
+        sequence_length <- output$get_shape()[1]
+        units           <- output$get_shape()[2]
         
         floormod <- tf$math$floormod(sequence_length, 2L)
-        
-        padding <- list(c(0L, 0L),
-                        c(0L, floormod),
-                        c(0L, 0L))
+        padding  <- list(c(0L, 0L),
+                         c(0L, floormod),
+                         c(0L, 0L))
         
         output <- tf$pad(output, padding)
         
-        new_units <- tf$math$multiply(num_units, 2L)
+        new_units <- tf$math$multiply(units, 2L)
         
         new_sequence_length <-
           tf$math$floordiv(sequence_length, 2L) + floormod
         
         new_shape <- 
-          tf$stack(list(self$batch, new_sequence_length, new_units))
+          tf$stack(list(batch, new_sequence_length, new_units))
         
         concat_output <- tf$reshape(output, new_shape)
 
@@ -145,10 +156,11 @@ PyramidalRecurrentBlock <-
 layer_pyramidal_recurrent_block <-
   function(object,
            units,
-           batch_size = 16,
            num_layers = 3,
            cell_type = 'LSTM',
            activation = 'tanh',
+           projection_activation = TRUE,
+           projection_batchnorm = TRUE,
            kernel_initializer = 'glorot_normal',
            kernel_regularizer = NULL,
            recurrent_activation = 'sigmoid',
@@ -164,10 +176,11 @@ layer_pyramidal_recurrent_block <-
       object,
       list(
         units = as.integer(units),
-        batch = as.integer(batch_size),
         num_layers = as.integer(num_layers),
         cell_type = toupper(as.character(cell_type)),
         activation = tf$keras$activations$get(activation),
+        projection_activation = projection_activation,
+        projection_batchnorm = projection_batchnorm,
         kernel_initializer = tf$keras$initializers$get(kernel_initializer),
         kernel_regularizer = tf$keras$regularizers$get(kernel_regularizer),
         recurrent_activation = tf$keras$activations$get(recurrent_activation),
@@ -181,3 +194,49 @@ layer_pyramidal_recurrent_block <-
       )
     )
   }
+
+
+# 
+# pblstm <- 
+#   function(batch_size) {
+#     
+#     input <- layer_input(shape = list(8192L, 1L))
+#     
+#     pblstm <- input  %>% 
+#       layer_pyramidal_recurrent_block(units = 64,
+#                                       batch_size = batch_size)
+#     
+#     output <- pblstm %>% 
+#       {layer_global_max_pooling_1d(.[[1]])} %>% 
+#       layer_dense(units = 5, activation = 'softmax')
+#     
+#     build_and_compile(input, output)
+#     
+#   }
+# 
+# 
+# batch_size <- 16L
+# (model <- pblstm(batch_size))
+# 
+# 
+# ds <-
+#   tf$data$Dataset$from_tensors(
+#     tuple(tf$random$normal(shape = list(16L, 8192L, 1L)),
+#           tf$ones(shape = list(16L, 5L)))) %>%
+#   dataset_shuffle_and_repeat(10) %>% 
+#   dataset_prefetch(1)
+# 
+# history <-
+#   model$fit(ds, epochs = 2L, steps_per_epoch = 5L, shuffle = TRUE)
+# 
+# fw <- tf$contrib$rnn$LayerNormBasicLSTMCell(num_units = 64, layer_norm = TRUE)
+# bw <- tf$contrib$rnn$LayerNormBasicLSTMCell(num_units = 64, layer_norm = TRUE)
+# 
+# bi <- tf$nn$bidirectional_dynamic_rnn(
+#   fw,
+#   bw,
+#   X,
+#   sequence_length = rep(X$get_shape()[1]$value, batch_size),
+#   dtype = tf$float32
+# )
+# 
